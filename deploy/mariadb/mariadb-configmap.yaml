@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: mariadb-config
-  namespace: assisted-installer
+  namespace: REPLACE_NAMESPACE
   labels:
     app: mariadb
 data:
