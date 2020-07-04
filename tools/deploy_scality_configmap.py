@@ -1,5 +1,10 @@
 import os
 import utils
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--namespace", help='namespace to use', type=str, default='assisted-installer')
+args = parser.parse_args()
 
 
 def main():
@@ -9,6 +14,7 @@ def main():
     with open(src_file, "r") as src:
         with open(dst_file, "w+") as dst:
             data = src.read()
+            data = data.replace('REPLACE_NAMESPACE', args.namespace)
             data = data.replace('REPLACE_URL', scality_url)
             print("Deploying {}".format(dst_file))
             dst.write(data)

@@ -6,6 +6,7 @@ import yaml
 parser = argparse.ArgumentParser()
 parser.add_argument("--deploy-tag", help='Tag for all deployment images', type=str, default='latest')
 parser.add_argument("--subsystem-test", help='deploy in subsystem mode', action='store_true')
+parser.add_argument("--namespace", help='namespace to use', type=str, default='assisted-installer')
 args = parser.parse_args()
 
 SRC_FILE = os.path.join(os.getcwd(), "deploy/bm-inventory.yaml")
@@ -16,7 +17,10 @@ TEST_HOST_MONITOR_INTERVAL = "1s"
 
 def main():
     with open(SRC_FILE, "r") as src:
-        data = yaml.safe_load(src)
+        raw_data = src.read()
+        raw_data = raw_data.replace('REPLACE_NAMESPACE', args.namespace)
+
+        data = yaml.safe_load(raw_data)
 
         if args.deploy_tag is not "":
             data["spec"]["template"]["spec"]["containers"][0]["image"] = "quay.io/ocpmetal/bm-inventory:{}".format(args.deploy_tag)

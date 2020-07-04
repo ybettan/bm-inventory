@@ -1,5 +1,10 @@
 import os
 import utils
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--namespace", help='namespace to use', type=str, default='assisted-installer')
+args = parser.parse_args()
 
 
 def main():
@@ -8,6 +13,7 @@ def main():
     with open(src_file, "r") as src:
         with open(dst_file, "w+") as dst:
             data = src.read()
+            data = data.replace('REPLACE_NAMESPACE', args.namespace)
             print("Deploying {}".format(dst_file))
             dst.write(data)
 
@@ -18,6 +24,7 @@ def main():
     with open(src_file, "r") as src:
         with open(dst_file, "w+") as dst:
             data = src.read()
+            data = data.replace('REPLACE_NAMESPACE', args.namespace)
             print("Deploying {}".format(dst_file))
             dst.write(data)
     utils.apply(dst_file)
@@ -27,9 +34,10 @@ def main():
     with open(src_file, "r") as src:
         with open(dst_file, "w+") as dst:
             data = src.read()
+            data = data.replace('REPLACE_NAMESPACE', args.namespace)
             try:
                 size = utils.check_output(
-                    "kubectl -n assisted-installer get persistentvolumeclaims mariadb-pv-claim " +
+                    f"kubectl -n {args.namespace} get persistentvolumeclaims mariadb-pv-claim " +
                     "-o=jsonpath='{.status.capacity.storage}'")
                 print("Using existing disk size", size)
             except:

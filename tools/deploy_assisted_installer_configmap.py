@@ -7,7 +7,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--target")
 parser.add_argument("--domain")
 parser.add_argument("--deploy-tag", help='Tag for all deployment images', type=str, default='latest')
-
+parser.add_argument("--namespace", help='namespace to use', type=str, default='assisted-installer')
 args = parser.parse_args()
 
 
@@ -19,16 +19,17 @@ SERVICE = "bm-inventory"
 def main():
     # TODO: delete once rename everything to assisted-installer
     if args.target == "oc-ingress":
-        service_host = "assisted-installer.{}".format(utils.get_domain(args.domain))
+        service_host = "assisted-installer.{}".format(utils.get_domain(args.domain, args.namespace))
         service_port = "80"
     else:
-        service_host = utils.get_service_host(SERVICE, args.target)
-        service_port = utils.get_service_port(SERVICE, args.target)
+        service_host = utils.get_service_host(SERVICE, args.target, namespace=args.namespace)
+        service_port = utils.get_service_port(SERVICE, args.target, namespace=args.namespace)
     with open(SRC_FILE, "r") as src:
         with open(DST_FILE, "w+") as dst:
             data = src.read()
             data = data.replace("REPLACE_URL", '"{}"'.format(service_host))
             data = data.replace("REPLACE_PORT", '"{}"'.format(service_port))
+            data = data.replace('REPLACE_NAMESPACE', args.namespace)
             print("Deploying {}".format(DST_FILE))
 
             if args.deploy_tag is not "":

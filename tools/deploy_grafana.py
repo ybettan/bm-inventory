@@ -8,6 +8,7 @@ import base64
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--target")
+parser.add_argument("--namespace", help='namespace to use', type=str, default='assisted-installer')
 args = parser.parse_args()
 
 
@@ -20,23 +21,23 @@ def deploy_oauth_reqs():
     # Token generation for session_secret
     session_secret = secrets.token_hex(43)
     secret_name = 'grafana-proxy'
-    if not utils.check_if_exists('secret', secret_name):
-        cmd = "{} -n assisted-installer create secret generic {} --from-literal=session_secret={}".format(CMD_BIN, secret_name, session_secret)
+    if not utils.check_if_exists('secret', secret_name, args.namespace):
+        cmd = "{} -n {} create secret generic {} --from-literal=session_secret={}".format(CMD_BIN, args.namespace, secret_name, session_secret)
         utils.check_output(cmd)
 
     ## Create and Annotate Serviceaccount
     sa_name = 'grafana'
-    if not utils.check_if_exists('sa', sa_name):
-        cmd = "{} -n assisted-installer create serviceaccount {} ".format(CMD_BIN, sa_name)
+    if not utils.check_if_exists('sa', sa_name, args.namespace):
+        cmd = "{} -n {} create serviceaccount {} ".format(CMD_BIN, args.namespace, sa_name)
         utils.check_output(cmd)
     json_manifest = '{"kind":"OAuthRedirectReference","apiVersion":"v1","reference":{"kind":"Route","name":"grafana"}}' 
     annotation_name = 'serviceaccounts.openshift.io/oauth-redirectreference.grafana'
-    cmd = "{} -n assisted-installer annotate serviceaccount {} --overwrite {}='{}'".format(
-            CMD_BIN, sa_name, annotation_name, json_manifest)
+    cmd = "{} -n {} annotate serviceaccount {} --overwrite {}='{}'".format(
+            CMD_BIN, args.namespace, sa_name, annotation_name, json_manifest)
     utils.check_output(cmd)
 
     # Get OCP Certificate
-    if not utils.check_if_exists('secret', 'openshift-custom-ca'):
+    if not utils.check_if_exists('secret', 'openshift-custom-ca', args.namespace):
         secret_name = 'router-certs-default'
         ns = 'openshift-ingress'
         template = '{{index .data "tls.crt"}}'
@@ -51,6 +52,7 @@ def deploy_oauth_reqs():
             with open(dst_file, "w+") as dst:
                 data = src.read()
                 data = data.replace("BASE64_CERT", ca_cert)
+                data = data.replace('REPLACE_NAMESPACE', args.namespace)
                 print("Deploying {}: {}".format(topic, dst_file))
                 dst.write(data)
         utils.apply(dst_file)
@@ -58,8 +60,14 @@ def deploy_oauth_reqs():
 
 def deployer(src_file, topic):
     src_file = os.path.join(os.getcwd(), src_file)
-    print("Deploying {}: {}".format(topic ,src_file))
-    utils.apply(src_file)
+    dst_file = os.path.join(os.getcwd(), 'build', os.path.basename(src_file))
+    with open(src_file) as fp:
+        data = fp.read()
+    data = data.replace('REPLACE_NAMESPACE', args.namespace)
+    with open(dst_file, 'w') as fp:
+        fp.write(data)
+    print("Deploying {}: {}".format(topic ,dst_file))
+    utils.apply(dst_file)
 
 
 def deploy_grafana_route():
@@ -67,39 +75,50 @@ def deploy_grafana_route():
     topic = 'Grafana Route'
     src_file = os.path.join(os.getcwd(), "deploy/monitoring/grafana/assisted-installer-ocp-grafana-route.yaml")
     dst_file = os.path.join(os.getcwd(), "build/assisted-installer-ocp-grafana-route.yaml")
-    ingress_domain = utils.get_domain()
+    ingress_domain = utils.get_domain(namespace=args.namespace)
     with open(src_file, "r") as src:
         with open(dst_file, "w+") as dst:
             data = src.read()
             data = data.replace("INGRESS_DOMAIN", ingress_domain)
+            data = data.replace('REPLACE_NAMESPACE', args.namespace)
             print("Deploying {}: {}".format(topic, dst_file))
             dst.write(data)
     utils.apply(dst_file)
 
 
 def deploy_grafana_ds():
-    ns = 'assisted-installer'
     secret_name = 'grafana-datasources'
     src_file = os.path.join(os.getcwd(), "deploy/monitoring/grafana/prometheus.json")
-    if not utils.check_if_exists('secret', secret_name):
+    dst_file = os.path.join(os.getcwd(), "build/prometheus.json")
+    with open(src_file) as fp:
+        data = fp.read()
+    data = data.replace('REPLACE_NAMESPACE', args.namespace)
+    with open(dst_file, 'w') as fp:
+        fp.write(data)
+    if not utils.check_if_exists('secret', secret_name, args.namespace):
         print("Creating Grafana Datasource")
-        cmd = "{} create secret generic {} --namespace={} --from-file=prometheus.yaml={}".format(CMD_BIN, secret_name, ns, src_file)
+        cmd = "{} create secret generic {} --namespace={} --from-file=prometheus.yaml={}".format(CMD_BIN, secret_name, args.namespace, dst_file)
         utils.check_output(cmd)
 
 
 def deploy_grafana_config(conf_file):
-    ns = 'assisted-installer'
     secret_name = 'grafana-config'
     src_file = os.path.join(os.getcwd(), "deploy/monitoring/grafana/" + conf_file)
-    if not utils.check_if_exists('secret', secret_name):
+    dst_file = os.path.join(os.getcwd(), conf_file)
+    with open(src_file) as fp:
+        data = fp.read()
+    data = data.replace('REPLACE_NAMESPACE', args.namespace)
+    with open(dst_file, 'w') as fp:
+        fp.write(data)
+    if not utils.check_if_exists('secret', secret_name, args.namespace):
         print("Creating Grafana Configuration")
-        cmd = "{} create secret generic {} --namespace={} --from-file=grafana.ini={}".format(CMD_BIN, secret_name, ns, src_file)
+        cmd = "{} create secret generic {} --namespace={} --from-file=grafana.ini={}".format(CMD_BIN, secret_name, args.namespace, dst_file)
         utils.check_output(cmd)
     else:
         print("Updating Grafana Configuration")
-        cmd = "{} delete secret {} --namespace={}".format(CMD_BIN, secret_name, ns)
+        cmd = "{} delete secret {} --namespace={}".format(CMD_BIN, secret_name, args.namespace)
         utils.check_output(cmd)
-        cmd = "{} create secret generic {} --namespace={} --from-file=grafana.ini={}".format(CMD_BIN, secret_name, ns, src_file)
+        cmd = "{} create secret generic {} --namespace={} --from-file=grafana.ini={}".format(CMD_BIN, secret_name, args.namespace, dst_file)
         utils.check_output(cmd)
 
 
@@ -117,7 +136,7 @@ def main():
         # Deploy Grafana 
         deployer('deploy/monitoring/grafana/assisted-installer-k8s-grafana.yaml', 'Grafana Instance on K8s')
         sleep(10)
-        utils.check_k8s_rollout('deployment', 'grafana')
+        utils.check_k8s_rollout('deployment', 'grafana', args.namespace)
     else:
         # Deploy Oauth Pre-reqs for OCP integration
         deploy_oauth_reqs()
@@ -133,7 +152,7 @@ def main():
         # Deploy Grafana 
         deployer('deploy/monitoring/grafana/assisted-installer-ocp-grafana.yaml', 'Grafana Instance on OCP')
         sleep(10)
-        utils.check_k8s_rollout('deployment', 'grafana')
+        utils.check_k8s_rollout('deployment', 'grafana', args.namespace)
         # Deploy grafana Route
         deploy_grafana_route()
 

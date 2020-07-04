@@ -5,7 +5,7 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument("--target")
 parser.add_argument("--domain")
-
+parser.add_argument("--namespace", help='namespace to use', type=str, default='assisted-installer')
 args = parser.parse_args()
 
 
@@ -15,6 +15,7 @@ def main():
     with open(src_file, "r") as src:
         with open(dst_file, "w+") as dst:
             data = src.read()
+            data = data.replace('REPLACE_NAMESPACE', args.namespace)
             print("Deploying {}".format(dst_file))
             dst.write(data)
 
@@ -27,8 +28,9 @@ def main():
         with open(src_file, "r") as src:
             with open(dst_file, "w+") as dst:
                 data = src.read()
+                data = data.replace('REPLACE_NAMESPACE', args.namespace)
                 data = data.replace("REPLACE_HOSTNAME",
-                                    utils.get_service_host("assisted-installer", args.target, args.domain))
+                                    utils.get_service_host("assisted-installer", args.target, args.domain, args.namespace))
                 print("Deploying {}".format(dst_file))
                 dst.write(data)
         utils.apply(dst_file)
