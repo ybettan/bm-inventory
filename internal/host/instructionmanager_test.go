@@ -2,7 +2,6 @@ package host
 
 import (
 	"context"
-	"testing"
 
 	"github.com/filanov/bm-inventory/internal/common"
 	"github.com/filanov/bm-inventory/internal/hardware"
@@ -67,6 +66,10 @@ var _ = Describe("instructionmanager", func() {
 			checkStepsByState(HostStatusInsufficient, &host, db, instMng, hwValidator, ctx,
 				[]models.StepType{models.StepTypeHardwareInfo, models.StepTypeInventory, models.StepTypeConnectivityCheck, models.StepTypeFreeNetworkAddresses})
 		})
+		It("pending-for-input", func() {
+			checkStepsByState(HostStatusPendingForInput, &host, db, instMng, hwValidator, ctx,
+				[]models.StepType{models.StepTypeInventory, models.StepTypeConnectivityCheck, models.StepTypeFreeNetworkAddresses})
+		})
 		It("error", func() {
 			checkStepsByState(HostStatusError, &host, db, instMng, hwValidator, ctx,
 				[]models.StepType{models.StepTypeExecute})
@@ -119,7 +122,7 @@ func checkStepsByState(state string, host *models.Host, db *gorm.DB, instMng *In
 	ExpectWithOffset(1, stepsErr).ShouldNot(HaveOccurred())
 }
 
-func TestInstructionManager(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "instruction manager tests")
-}
+//func TestInstructionManager(t *testing.T) {
+//	RegisterFailHandler(Fail)
+//	RunSpecs(t, "instruction manager tests")
+//}

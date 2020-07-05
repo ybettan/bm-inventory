@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/filanov/bm-inventory/internal/validators"
-
 	"github.com/filanov/bm-inventory/internal/common"
 	"github.com/go-openapi/runtime/middleware"
 
@@ -599,10 +597,10 @@ var _ = Describe("cluster", func() {
 		Expect(db.Model(&common.Cluster{Cluster: models.Cluster{ID: &clusterID}}).UpdateColumn("machine_network_cidr", machineCidr).Error).To(Not(HaveOccurred()))
 	}
 
-	getDisk := func() *models.Disk {
-		disk := models.Disk{DriveType: "SSD", Name: "loop0", SizeBytes: 0}
-		return &disk
-	}
+	//getDisk := func() *models.Disk {
+	//	disk := models.Disk{DriveType: "SSD", Name: "loop0", SizeBytes: 0}
+	//	return &disk
+	//}
 	mockPrepareForInstallationSuccess := func(mockClusterApi *cluster.MockAPI) {
 		mockClusterApi.EXPECT().PrepareForInstallation(gomock.Any(), gomock.Any()).Return(nil).Times(1)
 	}
@@ -623,13 +621,6 @@ var _ = Describe("cluster", func() {
 	}
 	setDefaultHostInstall := func(mockClusterApi *cluster.MockAPI) {
 		mockHostApi.EXPECT().Install(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
-	}
-	validateHostInventory := func(mockClusterApi *cluster.MockAPI) {
-		sufficient := validators.IsSufficientReply{IsSufficient: true}
-		mockHostApi.EXPECT().ValidateCurrentInventory(gomock.Any(), gomock.Any()).Return(&sufficient, nil).AnyTimes()
-	}
-	setDefaultHostGetHostValidDisks := func(mockClusterApi *cluster.MockAPI) {
-		mockHostApi.EXPECT().GetHostValidDisks(gomock.Any()).Return([]*models.Disk{getDisk()}, nil).AnyTimes()
 	}
 	setDefaultHostSetBootstrap := func(mockClusterApi *cluster.MockAPI) {
 		mockHostApi.EXPECT().SetBootstrap(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
@@ -862,9 +853,9 @@ var _ = Describe("cluster", func() {
 			It("Update success", func() {
 				apiVip := "10.11.12.15"
 				ingressVip := "10.11.12.16"
-				mockHostApi.EXPECT().RefreshStatus(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).Times(3)
 				mockHostApi.EXPECT().GetStagesByRole(gomock.Any(), gomock.Any()).Return(nil).Times(3) // Number of hosts
 				mockHostApi.EXPECT().GetHostname(gomock.Any()).Return("whatever").Times(3)            // Number of hosts
+				mockHostApi.EXPECT().RefreshStatus(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).Times(3)
 				mockClusterApi.EXPECT().RefreshStatus(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).Times(1)
 				reply := bm.UpdateCluster(ctx, installer.UpdateClusterParams{
 					ClusterID: clusterID,
@@ -950,9 +941,7 @@ var _ = Describe("cluster", func() {
 			setDefaultGetMasterNodesIds(mockClusterApi, 2)
 			setDefaultJobCreate(mockJob)
 			setDefaultJobMonitor(mockJob)
-			validateHostInventory(mockClusterApi)
 			setDefaultHostInstall(mockClusterApi)
-			setDefaultHostGetHostValidDisks(mockClusterApi)
 			setDefaultHostSetBootstrap(mockClusterApi)
 			setIgnitionGeneratorVersionSuccessWithDoneChannel(mockClusterApi, DoneChannel)
 
@@ -965,7 +954,6 @@ var _ = Describe("cluster", func() {
 		})
 
 		It("cidr calculate error", func() {
-			validateHostInventory(mockClusterApi)
 			updateMachineCidr(clusterID, "", db)
 			reply := bm.InstallCluster(ctx, installer.InstallClusterParams{
 				ClusterID: clusterID,
@@ -974,7 +962,6 @@ var _ = Describe("cluster", func() {
 		})
 
 		It("cidr mismatch", func() {
-			validateHostInventory(mockClusterApi)
 			updateMachineCidr(clusterID, "1.1.0.0/16", db)
 			reply := bm.InstallCluster(ctx, installer.InstallClusterParams{
 				ClusterID: clusterID,
@@ -983,7 +970,6 @@ var _ = Describe("cluster", func() {
 		})
 
 		It("Additional non matching master", func() {
-			validateHostInventory(mockClusterApi)
 			addHost(masterHostId4, models.HostRoleMaster, "known", clusterID, getInventoryStr("10.12.200.180/16"), db)
 			set4GetMasterNodesIds(mockClusterApi)
 
@@ -994,7 +980,6 @@ var _ = Describe("cluster", func() {
 		})
 
 		It("cluster failed to update", func() {
-			validateHostInventory(mockClusterApi)
 			mockIsInstallable()
 			mockPrepareForInstallationSuccess(mockClusterApi)
 			mockHandlePreInstallationError(mockClusterApi, DoneChannel)
@@ -1008,7 +993,6 @@ var _ = Describe("cluster", func() {
 		})
 
 		It("not all hosts are ready", func() {
-			validateHostInventory(mockClusterApi)
 			setDefaultGetMasterNodesIds(mockClusterApi, 1)
 			// Two out of three nodes are not ready
 			mockHostApi.EXPECT().IsInstallable(gomock.Any()).Return(false).Times(2)
@@ -1019,24 +1003,14 @@ var _ = Describe("cluster", func() {
 			verifyApiError(reply, http.StatusConflict)
 		})
 
-		It("cluster failed to  validateHostInventory", func() {
-			mockHostApi.EXPECT().ValidateCurrentInventory(gomock.Any(), gomock.Any()).Return(&validators.IsSufficientReply{IsSufficient: false, Reason: "dummy"}, nil)
-			reply := bm.InstallCluster(ctx, installer.InstallClusterParams{
-				ClusterID: clusterID,
-			})
-			verifyApiError(reply, http.StatusConflict)
-		})
-
 		It("host failed to install", func() {
 			mockPrepareForInstallationSuccess(mockClusterApi)
 			mockIsInstallable()
-			validateHostInventory(mockClusterApi)
 			setDefaultInstall(mockClusterApi)
 			setDefaultGetMasterNodesIds(mockClusterApi, 2)
 
 			mockHostApi.EXPECT().Install(gomock.Any(), gomock.Any(), gomock.Any()).
 				Return(errors.Errorf("host has a error")).AnyTimes()
-			setDefaultHostGetHostValidDisks(mockClusterApi)
 			setDefaultHostSetBootstrap(mockClusterApi)
 			mockHandlePreInstallationError(mockClusterApi, DoneChannel)
 
@@ -1050,7 +1024,6 @@ var _ = Describe("cluster", func() {
 		It("list of masters for setting bootstrap return empty list", func() {
 			mockPrepareForInstallationSuccess(mockClusterApi)
 			mockIsInstallable()
-			validateHostInventory(mockClusterApi)
 			setDefaultInstall(mockClusterApi)
 			// first call is for verifyClusterNetworkConfig
 			mockClusterApi.EXPECT().GetMasterNodesIds(gomock.Any(), gomock.Any(), gomock.Any()).
@@ -1068,7 +1041,6 @@ var _ = Describe("cluster", func() {
 		})
 
 		It("GetMasterNodesIds fails", func() {
-			validateHostInventory(mockClusterApi)
 			mockClusterApi.EXPECT().GetMasterNodesIds(gomock.Any(), gomock.Any(), gomock.Any()).
 				Return([]*strfmt.UUID{&masterHostId1, &masterHostId2, &masterHostId3}, errors.Errorf("nop"))
 
@@ -1080,7 +1052,6 @@ var _ = Describe("cluster", func() {
 		})
 
 		It("GetMasterNodesIds returns empty list", func() {
-			validateHostInventory(mockClusterApi)
 			mockClusterApi.EXPECT().GetMasterNodesIds(gomock.Any(), gomock.Any(), gomock.Any()).
 				Return([]*strfmt.UUID{&masterHostId1, &masterHostId2, &masterHostId3}, errors.Errorf("nop"))
 

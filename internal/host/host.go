@@ -4,13 +4,11 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/filanov/bm-inventory/internal/common"
 	"github.com/filanov/bm-inventory/internal/connectivity"
 	"github.com/filanov/bm-inventory/internal/events"
 	"github.com/filanov/bm-inventory/internal/hardware"
-	"github.com/filanov/bm-inventory/internal/validators"
 	"github.com/filanov/bm-inventory/models"
 	logutil "github.com/filanov/bm-inventory/pkg/log"
 	"github.com/filanov/stateswitch"
@@ -20,18 +18,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/thoas/go-funk"
 )
-
-//go:generate mockgen -source=host.go -package=host -aux_files=github.com/filanov/bm-inventory/internal/host=instructionmanager.go -destination=mock_host_api.go
-
-type StateAPI interface {
-	// check keep alive
-	RefreshStatus(ctx context.Context, h *models.Host, db *gorm.DB) (*UpdateReply, error)
-}
-
-type SpecificHardwareParams interface {
-	GetHostValidDisks(h *models.Host) ([]*models.Disk, error)
-	ValidateCurrentInventory(host *models.Host, cluster *common.Cluster) (*validators.IsSufficientReply, error)
-}
 
 const (
 	HostStatusDiscovering                 = "discovering"
@@ -45,6 +31,7 @@ const (
 	HostStatusInstalled                   = "installed"
 	HostStatusError                       = "error"
 	HostStatusResetting                   = "resetting"
+	HostStatusPendingForInput             = "pending-for-input"
 )
 
 var BootstrapStages = [...]models.HostStage{
@@ -63,14 +50,15 @@ var WorkerStages = [...]models.HostStage{
 	models.HostStageWaitingForIgnition, models.HostStageConfiguring, models.HostStageDone,
 }
 
+//go:generate mockgen -source=host.go -package=host -aux_files=github.com/filanov/bm-inventory/internal/host=instructionmanager.go -destination=mock_host_api.go
+
 type API interface {
 	// Register a new host
 	RegisterHost(ctx context.Context, h *models.Host) error
 	HandleInstallationFailure(ctx context.Context, h *models.Host) error
-	StateAPI
 	InstructionApi
-	SpecificHardwareParams
 	UpdateInstallProgress(ctx context.Context, h *models.Host, progress *models.HostProgress) error
+	RefreshStatus(ctx context.Context, h *models.Host, db *gorm.DB) error
 	SetBootstrap(ctx context.Context, h *models.Host, isbootstrap bool, db *gorm.DB) error
 	UpdateConnectivityReport(ctx context.Context, h *models.Host, connectivityReport string) error
 	HostMonitoring()
@@ -96,68 +84,26 @@ type API interface {
 type Manager struct {
 	log            logrus.FieldLogger
 	db             *gorm.DB
-	discovering    StateAPI
-	known          StateAPI
-	insufficient   StateAPI
-	disconnected   StateAPI
-	disabled       StateAPI
-	installing     StateAPI
-	installed      StateAPI
-	error          StateAPI
-	resetting      StateAPI
 	instructionApi InstructionApi
 	hwValidator    hardware.Validator
 	eventsHandler  events.Handler
 	sm             stateswitch.StateMachine
 }
 
-func NewManager(log logrus.FieldLogger, db *gorm.DB, eventsHandler events.Handler, hwValidator hardware.Validator, instructionApi InstructionApi, connectivityValidator connectivity.Validator) *Manager {
+func NewManager(log logrus.FieldLogger, db *gorm.DB, eventsHandler events.Handler, hwValidator hardware.Validator, instructionApi InstructionApi, connectivityValidator connectivity.Validator, hwValidatorCfg hardware.ValidatorCfg) *Manager {
 	th := &transitionHandler{
-		db:  db,
-		log: log,
+		db:             db,
+		log:            log,
+		hwValidatorCfg: hwValidatorCfg,
 	}
 	return &Manager{
 		log:            log,
 		db:             db,
-		discovering:    NewDiscoveringState(log, db, hwValidator, connectivityValidator),
-		known:          NewKnownState(log, db, hwValidator, connectivityValidator),
-		insufficient:   NewInsufficientState(log, db, hwValidator, connectivityValidator),
-		disconnected:   NewDisconnectedState(log, db, hwValidator),
-		disabled:       NewDisabledState(log, db),
-		installing:     NewInstallingState(log, db),
-		installed:      NewInstalledState(log, db),
-		error:          NewErrorState(log, db),
-		resetting:      NewResettingState(log, db),
 		instructionApi: instructionApi,
 		hwValidator:    hwValidator,
 		eventsHandler:  eventsHandler,
 		sm:             NewHostStateMachine(th),
 	}
-}
-
-func (m *Manager) getCurrentState(status string) (StateAPI, error) {
-	switch status {
-	case "":
-	case HostStatusDiscovering:
-		return m.discovering, nil
-	case HostStatusKnown:
-		return m.known, nil
-	case HostStatusInsufficient:
-		return m.insufficient, nil
-	case HostStatusDisconnected:
-		return m.disconnected, nil
-	case HostStatusDisabled:
-		return m.disabled, nil
-	case HostStatusInstalling:
-		return m.installing, nil
-	case HostStatusInstalled:
-		return m.installed, nil
-	case HostStatusError:
-		return m.error, nil
-	case HostStatusResetting:
-		return m.resetting, nil
-	}
-	return nil, fmt.Errorf("not supported host status: %s", status)
 }
 
 func (m *Manager) RegisterHost(ctx context.Context, h *models.Host) error {
@@ -212,17 +158,15 @@ func (m *Manager) UpdateInventory(ctx context.Context, h *models.Host, inventory
 	return m.db.Model(h).Update("inventory", inventory).Error
 }
 
-func (m *Manager) RefreshStatus(ctx context.Context, h *models.Host, db *gorm.DB) (*UpdateReply, error) {
-	state, err := m.getCurrentState(swag.StringValue(h.Status))
+func (m *Manager) RefreshStatus(ctx context.Context, h *models.Host, db *gorm.DB) error {
+	err := m.sm.Run(TransitionTypeRefresh, newStateHost(h), &TransitionArgsRefreshHost{
+		ctx: ctx,
+		db:  db,
+	})
 	if err != nil {
-		return nil, err
+		return common.NewApiError(http.StatusConflict, err)
 	}
-	ret, err := state.RefreshStatus(ctx, h, db)
-	if err == nil && ret.IsChanged {
-		msg := fmt.Sprintf("Updated status of host %s to %s", m.GetHostname(h), ret.State)
-		m.eventsHandler.AddEvent(ctx, h.ID.String(), msg, time.Now(), h.ClusterID.String())
-	}
-	return ret, err
+	return nil
 }
 
 func (m *Manager) Install(ctx context.Context, h *models.Host, db *gorm.DB) error {
@@ -250,14 +194,6 @@ func (m *Manager) DisableHost(ctx context.Context, h *models.Host) error {
 
 func (m *Manager) GetNextSteps(ctx context.Context, host *models.Host) (models.Steps, error) {
 	return m.instructionApi.GetNextSteps(ctx, host)
-}
-
-func (m *Manager) GetHostValidDisks(host *models.Host) ([]*models.Disk, error) {
-	return m.hwValidator.GetHostValidDisks(host)
-}
-
-func (m *Manager) ValidateCurrentInventory(host *models.Host, cluster *common.Cluster) (*validators.IsSufficientReply, error) {
-	return m.hwValidator.IsSufficient(host, cluster)
 }
 
 func (m *Manager) UpdateInstallProgress(ctx context.Context, h *models.Host, progress *models.HostProgress) error {
@@ -311,7 +247,7 @@ func (m *Manager) UpdateConnectivityReport(ctx context.Context, h *models.Host, 
 
 func (m *Manager) UpdateRole(ctx context.Context, h *models.Host, role models.HostRole, db *gorm.DB) error {
 	hostStatus := swag.StringValue(h.Status)
-	allowedStatuses := []string{HostStatusDiscovering, HostStatusKnown, HostStatusDisconnected, HostStatusInsufficient}
+	allowedStatuses := []string{HostStatusDiscovering, HostStatusKnown, HostStatusDisconnected, HostStatusInsufficient, HostStatusPendingForInput}
 	if !funk.ContainsString(allowedStatuses, hostStatus) {
 		return common.NewApiError(http.StatusBadRequest,
 			errors.Errorf("Host is in %s state, host role can be set only in one of %s states",

@@ -2,6 +2,14 @@ package host
 
 import (
 	"context"
+	"encoding/json"
+	"time"
+
+	"github.com/onsi/gomega/types"
+
+	"github.com/filanov/bm-inventory/internal/common"
+
+	"github.com/filanov/bm-inventory/internal/hardware"
 
 	"github.com/go-openapi/swag"
 
@@ -15,6 +23,18 @@ import (
 	. "github.com/onsi/ginkgo"
 )
 
+func createValidatorCfg() hardware.ValidatorCfg {
+	return hardware.ValidatorCfg{
+		MinCPUCores:       2,
+		MinCPUCoresWorker: 2,
+		MinCPUCoresMaster: 4,
+		MinDiskSizeGib:    120,
+		MinRamGib:         8,
+		MinRamGibWorker:   8,
+		MinRamGibMaster:   16,
+	}
+}
+
 var _ = Describe("RegisterHost", func() {
 	var (
 		ctx               = context.Background()
@@ -25,7 +45,7 @@ var _ = Describe("RegisterHost", func() {
 
 	BeforeEach(func() {
 		db = prepareDB()
-		hapi = NewManager(getTestLog(), db, nil, nil, nil, nil)
+		hapi = NewManager(getTestLog(), db, nil, nil, nil, nil, createValidatorCfg())
 		hostId = strfmt.UUID(uuid.New().String())
 		clusterId = strfmt.UUID(uuid.New().String())
 	})
@@ -242,7 +262,7 @@ var _ = Describe("HostInstallationFailed", func() {
 
 	BeforeEach(func() {
 		db = prepareDB()
-		hapi = NewManager(getTestLog(), db, nil, nil, nil, nil)
+		hapi = NewManager(getTestLog(), db, nil, nil, nil, nil, createValidatorCfg())
 		hostId = strfmt.UUID(uuid.New().String())
 		clusterId = strfmt.UUID(uuid.New().String())
 		host = getTestHost(hostId, clusterId, "")
@@ -273,7 +293,7 @@ var _ = Describe("Install", func() {
 
 	BeforeEach(func() {
 		db = prepareDB()
-		hapi = NewManager(getTestLog(), db, nil, nil, nil, nil)
+		hapi = NewManager(getTestLog(), db, nil, nil, nil, nil, createValidatorCfg())
 		hostId = strfmt.UUID(uuid.New().String())
 		clusterId = strfmt.UUID(uuid.New().String())
 	})
@@ -431,7 +451,7 @@ var _ = Describe("Disable", func() {
 
 	BeforeEach(func() {
 		db = prepareDB()
-		hapi = NewManager(getTestLog(), db, nil, nil, nil, nil)
+		hapi = NewManager(getTestLog(), db, nil, nil, nil, nil, createValidatorCfg())
 		hostId = strfmt.UUID(uuid.New().String())
 		clusterId = strfmt.UUID(uuid.New().String())
 	})
@@ -535,7 +555,7 @@ var _ = Describe("Enable", func() {
 
 	BeforeEach(func() {
 		db = prepareDB()
-		hapi = NewManager(getTestLog(), db, nil, nil, nil, nil)
+		hapi = NewManager(getTestLog(), db, nil, nil, nil, nil, createValidatorCfg())
 		hostId = strfmt.UUID(uuid.New().String())
 		clusterId = strfmt.UUID(uuid.New().String())
 	})
@@ -626,6 +646,725 @@ var _ = Describe("Enable", func() {
 		}
 	})
 
+	AfterEach(func() {
+		_ = db.Close()
+	})
+})
+
+type statusInfoChecker interface {
+	check(statusInfo *string)
+}
+
+type valueChecker struct {
+	value string
+}
+
+func (v *valueChecker) check(value *string) {
+	if value == nil {
+		Expect(v.value).To(Equal(""))
+	} else {
+		Expect(*value).To(Equal(v.value))
+	}
+}
+
+func makeValueChecker(value string) statusInfoChecker {
+	return &valueChecker{value: value}
+}
+
+type jsonChecker struct {
+	patterns map[string][]string
+}
+
+func (j *jsonChecker) check(valuesStr *string) {
+	Expect(valuesStr).ToNot(BeNil())
+	valuesMap := make(map[string][]string)
+	Expect(json.Unmarshal([]byte(*valuesStr), &valuesMap)).ToNot(HaveOccurred())
+	for key, patternsSlice := range j.patterns {
+		valuesSlice, ok := valuesMap[key]
+		Expect(len(valuesSlice)).To(Equal(len(patternsSlice)))
+		Expect(ok).To(BeTrue())
+		matchers := make([]types.GomegaMatcher, 0)
+		for _, p := range patternsSlice {
+			matchers = append(matchers, MatchRegexp(p))
+		}
+		for _, v := range valuesSlice {
+			Expect(v).To(Or(matchers...))
+		}
+	}
+}
+
+func makeJsonChecker(patterns map[string][]string) statusInfoChecker {
+	return &jsonChecker{patterns: patterns}
+}
+
+var _ = Describe("Refresh Host", func() {
+	var (
+		ctx               = context.Background()
+		hapi              API
+		db                *gorm.DB
+		hostId, clusterId strfmt.UUID
+		host              models.Host
+		cluster           common.Cluster
+	)
+
+	BeforeEach(func() {
+		db = prepareDB()
+		hapi = NewManager(getTestLog(), db, nil, nil, nil, nil, createValidatorCfg())
+		hostId = strfmt.UUID(uuid.New().String())
+		clusterId = strfmt.UUID(uuid.New().String())
+	})
+	Context("All transitions", func() {
+		var srcState string
+		tests := []struct {
+			name               string
+			srcState           string
+			inventory          string
+			role               string
+			machineNetworkCidr string
+			checkedInAt        strfmt.DateTime
+			dstState           string
+			statusInfoChecker  statusInfoChecker
+			errorExpected      bool
+		}{
+			{
+				name:              "discovering to disconnected",
+				srcState:          HostStatusDiscovering,
+				dstState:          HostStatusDisconnected,
+				statusInfoChecker: makeValueChecker(statusInfoDisconnected),
+				errorExpected:     false,
+			},
+			{
+				name:              "insufficient to disconnected",
+				srcState:          HostStatusInsufficient,
+				dstState:          HostStatusDisconnected,
+				statusInfoChecker: makeValueChecker(statusInfoDisconnected),
+				errorExpected:     false,
+			},
+			{
+				name:              "known to disconnected",
+				srcState:          HostStatusKnown,
+				dstState:          HostStatusDisconnected,
+				statusInfoChecker: makeValueChecker(statusInfoDisconnected),
+				errorExpected:     false,
+			},
+			{
+				name:              "pending to disconnected",
+				srcState:          HostStatusPendingForInput,
+				dstState:          HostStatusDisconnected,
+				statusInfoChecker: makeValueChecker(statusInfoDisconnected),
+				errorExpected:     false,
+			},
+			{
+				name:              "disconnected to disconnected",
+				srcState:          HostStatusDisconnected,
+				dstState:          HostStatusDisconnected,
+				statusInfoChecker: makeValueChecker(statusInfoDisconnected),
+				errorExpected:     false,
+			},
+			{
+				name:              "disconnected to discovering",
+				checkedInAt:       strfmt.DateTime(time.Now()),
+				srcState:          HostStatusDisconnected,
+				dstState:          HostStatusDiscovering,
+				statusInfoChecker: makeValueChecker(statusInfoDiscovering),
+				errorExpected:     false,
+			},
+			{
+				name:              "discovering to discovering",
+				checkedInAt:       strfmt.DateTime(time.Now()),
+				srcState:          HostStatusDiscovering,
+				dstState:          HostStatusDiscovering,
+				statusInfoChecker: makeValueChecker(statusInfoDiscovering),
+				errorExpected:     false,
+			},
+			{
+				name:        "disconnected to insufficient (1)",
+				checkedInAt: strfmt.DateTime(time.Now()),
+				srcState:    HostStatusDisconnected,
+				dstState:    HostStatusInsufficient,
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"hardware": {
+							"^Insufficient RAM requirements.*$",
+							"^Insufficient number of disks with required size.*$",
+						},
+					}),
+				inventory:     insufficientHWInventory(),
+				errorExpected: false,
+			},
+			{
+				name:        "insufficient to insufficient (1)",
+				checkedInAt: strfmt.DateTime(time.Now()),
+				srcState:    HostStatusInsufficient,
+				dstState:    HostStatusInsufficient,
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"hardware": {
+							"^Insufficient RAM requirements.*$",
+							"^Insufficient number of disks with required size.*$",
+						},
+					}),
+				inventory:     insufficientHWInventory(),
+				errorExpected: false,
+			},
+			{
+				name:        "discovering to insufficient (1)",
+				checkedInAt: strfmt.DateTime(time.Now()),
+				srcState:    HostStatusDiscovering,
+				dstState:    HostStatusInsufficient,
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"hardware": {
+							"^Insufficient RAM requirements.*$",
+							"^Insufficient number of disks with required size.*$",
+						},
+					}),
+				inventory:     insufficientHWInventory(),
+				errorExpected: false,
+			},
+			{
+				name:              "pending to insufficient (1)",
+				checkedInAt:       strfmt.DateTime(time.Now()),
+				srcState:          HostStatusPendingForInput,
+				dstState:          HostStatusPendingForInput,
+				statusInfoChecker: makeValueChecker(""),
+				inventory:         insufficientHWInventory(),
+				errorExpected:     true,
+			},
+			{
+				name:              "known to insufficient (1)",
+				checkedInAt:       strfmt.DateTime(time.Now()),
+				srcState:          HostStatusKnown,
+				dstState:          HostStatusKnown,
+				statusInfoChecker: makeValueChecker(""),
+				inventory:         insufficientHWInventory(),
+				errorExpected:     true,
+			},
+			{
+				name:        "disconnected to pending",
+				checkedInAt: strfmt.DateTime(time.Now()),
+				srcState:    HostStatusDisconnected,
+				dstState:    HostStatusPendingForInput,
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"network": {
+							"^Machine network CIDR for cluster is missing, The machine network is set by configuring the API-VIP or Ingress-VIP$",
+						},
+						"role": {
+							"^Role is not defined$",
+						},
+					}),
+				inventory:     workerInventory(),
+				errorExpected: false,
+			},
+			{
+				name:               "discovering to pending",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusDiscovering,
+				dstState:           HostStatusPendingForInput,
+				machineNetworkCidr: "5.6.7.0/24",
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"role": {
+							"^Role is not defined$",
+						},
+					}),
+				inventory:     workerInventory(),
+				errorExpected: false,
+			},
+			{
+				name:               "insufficient to pending",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusInsufficient,
+				dstState:           HostStatusPendingForInput,
+				machineNetworkCidr: "5.6.7.0/24",
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"role": {
+							"^Role is not defined$",
+						},
+					}),
+				inventory:     workerInventory(),
+				errorExpected: false,
+			},
+			{
+				name:        "known to pending",
+				checkedInAt: strfmt.DateTime(time.Now()),
+				srcState:    HostStatusKnown,
+				dstState:    HostStatusPendingForInput,
+				role:        "worker",
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"network": {
+							"^Machine network CIDR for cluster is missing, The machine network is set by configuring the API-VIP or Ingress-VIP$",
+						},
+					}),
+				inventory:     workerInventory(),
+				errorExpected: false,
+			},
+			{
+				name:        "pending to pending",
+				checkedInAt: strfmt.DateTime(time.Now()),
+				srcState:    HostStatusPendingForInput,
+				dstState:    HostStatusPendingForInput,
+				role:        "worker",
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"network": {
+							"^Machine network CIDR for cluster is missing, The machine network is set by configuring the API-VIP or Ingress-VIP$",
+						},
+					}),
+				inventory:     workerInventory(),
+				errorExpected: false,
+			},
+			{
+				name:               "disconnected to insufficient (2)",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusDisconnected,
+				dstState:           HostStatusInsufficient,
+				machineNetworkCidr: "5.6.7.0/24",
+				role:               "worker",
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"network": {
+							"^Host does not belong to the machine network cidr .*$",
+						},
+					}),
+				inventory:     workerInventory(),
+				errorExpected: false,
+			},
+			{
+				name:               "discovering to insufficient (2)",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusDiscovering,
+				dstState:           HostStatusInsufficient,
+				machineNetworkCidr: "5.6.7.0/24",
+				role:               "master",
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"network": {
+							"^Host does not belong to the machine network cidr .*$",
+						},
+						"hardware": {
+							"^Insufficient CPU cores, expected: .*",
+							"^Insufficient RAM requirements, expected: .*",
+						},
+					}),
+				inventory:     workerInventory(),
+				errorExpected: false,
+			},
+			{
+				name:               "insufficient to insufficient (2)",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusInsufficient,
+				dstState:           HostStatusInsufficient,
+				machineNetworkCidr: "1.2.3.0/24",
+				role:               "master",
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"hardware": {
+							"^Insufficient CPU cores, expected: .*",
+							"^Insufficient RAM requirements, expected: .*",
+						},
+					}),
+				inventory:     workerInventory(),
+				errorExpected: false,
+			},
+			{
+				name:               "pending to insufficient (2)",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusPendingForInput,
+				dstState:           HostStatusInsufficient,
+				machineNetworkCidr: "1.2.3.0/24",
+				role:               "master",
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"hardware": {
+							"^Insufficient CPU cores, expected: .*",
+							"^Insufficient RAM requirements, expected: .*",
+						},
+					}),
+				inventory:     workerInventory(),
+				errorExpected: false,
+			},
+			{
+				name:               "known to insufficient (2)",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusKnown,
+				dstState:           HostStatusInsufficient,
+				machineNetworkCidr: "5.6.7.0/24",
+				role:               "master",
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"network": {
+							"^Host does not belong to the machine network cidr .*$",
+						},
+					}),
+				inventory:     masterInventory(),
+				errorExpected: false,
+			},
+			{
+				name:               "insufficient to insufficient (2)",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusInsufficient,
+				dstState:           HostStatusInsufficient,
+				machineNetworkCidr: "5.6.7.0/24",
+				role:               "master",
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"network": {
+							"^Host does not belong to the machine network cidr .*$",
+						},
+					}),
+				inventory:     masterInventory(),
+				errorExpected: false,
+			},
+			{
+				name:               "discovering to known",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusDiscovering,
+				dstState:           HostStatusKnown,
+				machineNetworkCidr: "1.2.3.0/24",
+				role:               "master",
+				statusInfoChecker:  makeValueChecker(""),
+				inventory:          masterInventory(),
+				errorExpected:      false,
+			},
+			{
+				name:               "insufficient to known",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusInsufficient,
+				dstState:           HostStatusKnown,
+				machineNetworkCidr: "1.2.3.0/24",
+				role:               "worker",
+				statusInfoChecker:  makeValueChecker(""),
+				inventory:          masterInventory(),
+				errorExpected:      false,
+			},
+			{
+				name:               "pending to known",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusPendingForInput,
+				dstState:           HostStatusKnown,
+				machineNetworkCidr: "1.2.3.0/24",
+				role:               "worker",
+				statusInfoChecker:  makeValueChecker(""),
+				inventory:          masterInventory(),
+				errorExpected:      false,
+			},
+			{
+				name:               "known to known",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusKnown,
+				dstState:           HostStatusKnown,
+				machineNetworkCidr: "1.2.3.0/24",
+				role:               "master",
+				statusInfoChecker:  makeValueChecker(""),
+				inventory:          masterInventory(),
+				errorExpected:      false,
+			},
+			{
+				name:               "known to known with unexpected role",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusKnown,
+				dstState:           HostStatusKnown,
+				machineNetworkCidr: "1.2.3.0/24",
+				role:               "kuku",
+				statusInfoChecker:  makeValueChecker(""),
+				inventory:          masterInventory(),
+				errorExpected:      true,
+			},
+		}
+
+		for i := range tests {
+			t := tests[i]
+			It(t.name, func() {
+				srcState = t.srcState
+				host = getTestHost(hostId, clusterId, srcState)
+				host.Inventory = t.inventory
+				host.Role = models.HostRole(t.role)
+				host.CheckedInAt = t.checkedInAt
+				Expect(db.Create(&host).Error).ShouldNot(HaveOccurred())
+				cluster = getTestCluster(clusterId, t.machineNetworkCidr)
+				Expect(db.Create(&cluster).Error).ToNot(HaveOccurred())
+				err := hapi.RefreshStatus(ctx, &host, db)
+				if t.errorExpected {
+					Expect(err).To(HaveOccurred())
+				} else {
+					Expect(err).ToNot(HaveOccurred())
+				}
+				var resultHost models.Host
+				Expect(db.Take(&resultHost, "id = ? and cluster_id = ?", hostId.String(), clusterId.String()).Error).ToNot(HaveOccurred())
+				Expect(resultHost.Role).To(Equal(models.HostRole(t.role)))
+				Expect(resultHost.Status).To(Equal(&t.dstState))
+				t.statusInfoChecker.check(resultHost.StatusInfo)
+			})
+		}
+	})
+	Context("Unique hostname", func() {
+		var srcState string
+		var otherHostID strfmt.UUID
+
+		BeforeEach(func() {
+			otherHostID = strfmt.UUID(uuid.New().String())
+		})
+
+		tests := []struct {
+			name                   string
+			srcState               string
+			inventory              string
+			role                   string
+			machineNetworkCidr     string
+			checkedInAt            strfmt.DateTime
+			dstState               string
+			requestedHostname      string
+			otherState             string
+			otherRequestedHostname string
+			otherInventory         string
+			statusInfoChecker      statusInfoChecker
+			errorExpected          bool
+		}{
+			{
+				name:               "insufficient to known",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusInsufficient,
+				dstState:           HostStatusKnown,
+				machineNetworkCidr: "1.2.3.0/24",
+				role:               "worker",
+				statusInfoChecker:  makeValueChecker(""),
+				inventory:          masterInventoryWithHostname("first"),
+				otherState:         HostStatusInsufficient,
+				otherInventory:     masterInventoryWithHostname("second"),
+				errorExpected:      false,
+			},
+			{
+				name:               "insufficient to insufficient (same hostname) 1",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusInsufficient,
+				dstState:           HostStatusInsufficient,
+				machineNetworkCidr: "1.2.3.0/24",
+				role:               "worker",
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"hardware": {
+							"^Hostname first is not unique in cluster$",
+						},
+					}),
+				inventory:      masterInventoryWithHostname("first"),
+				otherState:     HostStatusInsufficient,
+				otherInventory: masterInventoryWithHostname("first"),
+				errorExpected:  false,
+			},
+			{
+				name:               "insufficient to insufficient (same hostname) 2",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusInsufficient,
+				dstState:           HostStatusInsufficient,
+				machineNetworkCidr: "1.2.3.0/24",
+				role:               "worker",
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"hardware": {
+							"^Hostname first is not unique in cluster$",
+						},
+					}),
+				inventory:              masterInventoryWithHostname("first"),
+				otherState:             HostStatusInsufficient,
+				otherInventory:         masterInventoryWithHostname("second"),
+				otherRequestedHostname: "first",
+				errorExpected:          false,
+			},
+			{
+				name:               "insufficient to insufficient (same hostname) 3",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusInsufficient,
+				dstState:           HostStatusInsufficient,
+				machineNetworkCidr: "1.2.3.0/24",
+				role:               "worker",
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"hardware": {
+							"^Hostname second is not unique in cluster$",
+						},
+					}),
+				inventory:         masterInventoryWithHostname("first"),
+				requestedHostname: "second",
+				otherState:        HostStatusInsufficient,
+				otherInventory:    masterInventoryWithHostname("second"),
+				errorExpected:     false,
+			},
+			{
+				name:               "insufficient to insufficient (same hostname) 4",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusInsufficient,
+				dstState:           HostStatusInsufficient,
+				machineNetworkCidr: "1.2.3.0/24",
+				role:               "worker",
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"hardware": {
+							"^Hostname third is not unique in cluster$",
+						},
+					}),
+				inventory:              masterInventoryWithHostname("first"),
+				requestedHostname:      "third",
+				otherState:             HostStatusInsufficient,
+				otherInventory:         masterInventoryWithHostname("second"),
+				otherRequestedHostname: "third",
+				errorExpected:          false,
+			},
+			{
+				name:                   "insufficient to known 2",
+				checkedInAt:            strfmt.DateTime(time.Now()),
+				srcState:               HostStatusInsufficient,
+				dstState:               HostStatusKnown,
+				machineNetworkCidr:     "1.2.3.0/24",
+				role:                   "worker",
+				statusInfoChecker:      makeValueChecker(""),
+				inventory:              masterInventoryWithHostname("first"),
+				requestedHostname:      "third",
+				otherState:             HostStatusInsufficient,
+				otherInventory:         masterInventoryWithHostname("second"),
+				otherRequestedHostname: "forth",
+				errorExpected:          false,
+			},
+
+			{
+				name:               "known to known",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusKnown,
+				dstState:           HostStatusKnown,
+				machineNetworkCidr: "1.2.3.0/24",
+				role:               "worker",
+				statusInfoChecker:  makeValueChecker(""),
+				inventory:          masterInventoryWithHostname("first"),
+				otherState:         HostStatusInsufficient,
+				otherInventory:     masterInventoryWithHostname("second"),
+				errorExpected:      false,
+			},
+			{
+				name:               "known to insufficient (same hostname) 1",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusKnown,
+				dstState:           HostStatusInsufficient,
+				machineNetworkCidr: "1.2.3.0/24",
+				role:               "worker",
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"hardware": {
+							"^Hostname first is not unique in cluster$",
+						},
+					}),
+				inventory:      masterInventoryWithHostname("first"),
+				otherState:     HostStatusInsufficient,
+				otherInventory: masterInventoryWithHostname("first"),
+				errorExpected:  false,
+			},
+			{
+				name:               "known to insufficient (same hostname) 2",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusKnown,
+				dstState:           HostStatusInsufficient,
+				machineNetworkCidr: "1.2.3.0/24",
+				role:               "worker",
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"hardware": {
+							"^Hostname first is not unique in cluster$",
+						},
+					}),
+				inventory:              masterInventoryWithHostname("first"),
+				otherState:             HostStatusInsufficient,
+				otherInventory:         masterInventoryWithHostname("second"),
+				otherRequestedHostname: "first",
+				errorExpected:          false,
+			},
+			{
+				name:               "known to insufficient (same hostname) 3",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusKnown,
+				dstState:           HostStatusInsufficient,
+				machineNetworkCidr: "1.2.3.0/24",
+				role:               "worker",
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"hardware": {
+							"^Hostname second is not unique in cluster$",
+						},
+					}),
+				inventory:         masterInventoryWithHostname("first"),
+				requestedHostname: "second",
+				otherState:        HostStatusInsufficient,
+				otherInventory:    masterInventoryWithHostname("second"),
+				errorExpected:     false,
+			},
+			{
+				name:               "known to insufficient (same hostname) 4",
+				checkedInAt:        strfmt.DateTime(time.Now()),
+				srcState:           HostStatusKnown,
+				dstState:           HostStatusInsufficient,
+				machineNetworkCidr: "1.2.3.0/24",
+				role:               "worker",
+				statusInfoChecker: makeJsonChecker(
+					map[string][]string{
+						"hardware": {
+							"^Hostname third is not unique in cluster$",
+						},
+					}),
+				inventory:              masterInventoryWithHostname("first"),
+				requestedHostname:      "third",
+				otherState:             HostStatusInsufficient,
+				otherInventory:         masterInventoryWithHostname("second"),
+				otherRequestedHostname: "third",
+				errorExpected:          false,
+			},
+			{
+				name:                   "known to known 2",
+				checkedInAt:            strfmt.DateTime(time.Now()),
+				srcState:               HostStatusKnown,
+				dstState:               HostStatusKnown,
+				machineNetworkCidr:     "1.2.3.0/24",
+				role:                   "worker",
+				statusInfoChecker:      makeValueChecker(""),
+				inventory:              masterInventoryWithHostname("first"),
+				requestedHostname:      "third",
+				otherState:             HostStatusInsufficient,
+				otherInventory:         masterInventoryWithHostname("first"),
+				otherRequestedHostname: "forth",
+				errorExpected:          false,
+			},
+		}
+
+		for i := range tests {
+			t := tests[i]
+			It(t.name, func() {
+				srcState = t.srcState
+				host = getTestHost(hostId, clusterId, srcState)
+				host.Inventory = t.inventory
+				host.Role = models.HostRole(t.role)
+				host.CheckedInAt = t.checkedInAt
+				host.RequestedHostname = t.requestedHostname
+				Expect(db.Create(&host).Error).ShouldNot(HaveOccurred())
+				otherHost := getTestHost(otherHostID, clusterId, t.otherState)
+				otherHost.RequestedHostname = t.otherRequestedHostname
+				otherHost.Inventory = t.otherInventory
+				Expect(db.Create(&otherHost).Error).ShouldNot(HaveOccurred())
+				cluster = getTestCluster(clusterId, t.machineNetworkCidr)
+				Expect(db.Create(&cluster).Error).ToNot(HaveOccurred())
+				err := hapi.RefreshStatus(ctx, &host, db)
+				if t.errorExpected {
+					Expect(err).To(HaveOccurred())
+				} else {
+					Expect(err).ToNot(HaveOccurred())
+				}
+				var resultHost models.Host
+				Expect(db.Take(&resultHost, "id = ? and cluster_id = ?", hostId.String(), clusterId.String()).Error).ToNot(HaveOccurred())
+				Expect(resultHost.Role).To(Equal(models.HostRole(t.role)))
+				Expect(resultHost.Status).To(Equal(&t.dstState))
+				t.statusInfoChecker.check(resultHost.StatusInfo)
+			})
+		}
+	})
 	AfterEach(func() {
 		_ = db.Close()
 	})

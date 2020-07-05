@@ -1,17 +1,10 @@
 package host
 
 import (
-	"encoding/json"
 	"time"
 
-	"github.com/filanov/bm-inventory/internal/validators"
-
-	"github.com/filanov/bm-inventory/internal/connectivity"
-
-	"github.com/filanov/bm-inventory/internal/common"
 	"github.com/go-openapi/strfmt"
 
-	"github.com/filanov/bm-inventory/internal/hardware"
 	"github.com/filanov/bm-inventory/models"
 	"github.com/go-openapi/swag"
 	"github.com/jinzhu/gorm"
@@ -31,27 +24,8 @@ type UpdateReply struct {
 	IsChanged bool
 }
 
-type baseState struct {
-	log logrus.FieldLogger
-	db  *gorm.DB
-}
-
 func updateState(log logrus.FieldLogger, state, stateInfo string, h *models.Host, db *gorm.DB) (*UpdateReply, error) {
 	return updateStateWithParams(log, state, stateInfo, h, db)
-}
-
-func defaultReply(h *models.Host) (*UpdateReply, error) {
-	return &UpdateReply{
-		State:     swag.StringValue(h.Status),
-		IsChanged: false,
-	}, nil
-}
-
-func updateByKeepAlive(log logrus.FieldLogger, h *models.Host, db *gorm.DB) (*UpdateReply, error) {
-	if h.CheckedInAt.String() != "" && time.Since(time.Time(h.CheckedInAt)) > 3*time.Minute {
-		return updateState(log, HostStatusDisconnected, statusInfoDisconnected, h, db)
-	}
-	return defaultReply(h)
 }
 
 func updateStateWithParams(log logrus.FieldLogger, status, statusInfo string, h *models.Host, db *gorm.DB, extra ...interface{}) (*UpdateReply, error) {
@@ -112,82 +86,4 @@ func updateHostStateWithParams(log logrus.FieldLogger, srcStatus, statusInfo str
 	log.Infof("Updated host <%s> status from <%s> to <%s> with fields: %s",
 		h.ID.String(), srcStatus, swag.StringValue(h.Status), updates)
 	return nil
-}
-
-func getCluster(clusterID strfmt.UUID, db *gorm.DB) (*common.Cluster, error) {
-	var cluster common.Cluster
-	if err := db.Preload("Hosts", "status <> ?", HostStatusDisabled).First(&cluster, "id = ?", clusterID).Error; err != nil {
-		return nil, err
-	}
-	return &cluster, nil
-}
-
-func isSufficientRole(h *models.Host) *validators.IsSufficientReply {
-	var reason string
-	isSufficient := true
-
-	if h.Role == "" {
-		isSufficient = false
-		reason = "No role selected"
-	}
-
-	return &validators.IsSufficientReply{
-		Type:         "role",
-		IsSufficient: isSufficient,
-		Reason:       reason,
-	}
-}
-
-func checkAndUpdateSufficientHost(log logrus.FieldLogger, h *models.Host, db *gorm.DB, hwValidator hardware.Validator, connectivityValidator connectivity.Validator) (*UpdateReply, error) {
-	//checking if need to change state to disconnect
-	stateReply, err := updateByKeepAlive(log, h, db)
-	if err != nil || stateReply.IsChanged {
-		return stateReply, err
-	}
-	var statusInfoDetails = make(map[string]string)
-	//checking inventory isInsufficient
-	cluster, err := getCluster(h.ClusterID, db)
-	if err != nil {
-		return nil, err
-	}
-	inventoryReply, err := hwValidator.IsSufficient(h, cluster)
-	if err != nil {
-		statusInfoDetails["hardware"] = "parsing error"
-	} else {
-		statusInfoDetails[inventoryReply.Type] = inventoryReply.Reason
-	}
-
-	//checking connectivity isSufficient
-	connectivityReply, err := connectivityValidator.IsSufficient(h, cluster)
-	if err != nil {
-		statusInfoDetails["connectivity"] = "unknown error"
-	} else {
-		statusInfoDetails[connectivityReply.Type] = connectivityReply.Reason
-	}
-	//checking role isSufficient
-	roleReply := isSufficientRole(h)
-	statusInfoDetails[roleReply.Type] = roleReply.Reason
-
-	var newStatus, newStatusInfo string
-	if inventoryReply != nil && inventoryReply.IsSufficient && roleReply.IsSufficient && connectivityReply.IsSufficient {
-		newStatus = HostStatusKnown
-		newStatusInfo = ""
-	} else {
-		statusInfo, err := json.Marshal(statusInfoDetails)
-		if err != nil {
-			return nil, err
-		}
-		newStatus = HostStatusInsufficient
-		newStatusInfo = string(statusInfo)
-	}
-
-	//update status & status info in DB only if there is a change
-	if swag.StringValue(h.Status) != newStatus || swag.StringValue(h.StatusInfo) != newStatusInfo {
-		log.Infof("is sufficient host: %s role reply %+v inventory reply %+v connectivity reply %+v", h.ID, roleReply, inventoryReply, connectivityReply)
-		return updateState(log, newStatus, newStatusInfo, h, db)
-	}
-	return &UpdateReply{
-		State:     swag.StringValue(h.Status),
-		IsChanged: false,
-	}, nil
 }

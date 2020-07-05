@@ -1,14 +1,17 @@
 package host
 
 import (
+	"github.com/filanov/bm-inventory/internal/common"
 	"github.com/filanov/bm-inventory/models"
 	"github.com/filanov/stateswitch"
 	"github.com/go-openapi/swag"
 )
 
 type stateHost struct {
-	srcState string
-	host     *models.Host
+	srcState  string
+	host      *models.Host
+	cluster   *common.Cluster
+	inventory *models.Inventory
 }
 
 func newStateHost(h *models.Host) *stateHost {
