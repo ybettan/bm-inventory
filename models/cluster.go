@@ -90,6 +90,9 @@ type Cluster struct {
 	// Enum: [4.5]
 	OpenshiftVersion string `json:"openshift_version,omitempty"`
 
+	// owner
+	Owner string `json:"owner,omitempty"`
+
 	// True if the pull-secret has been added to the cluster
 	PullSecretSet bool `json:"pull_secret_set,omitempty"`
 

@@ -1430,6 +1430,9 @@ func init() {
             "4.5"
           ]
         },
+        "owner": {
+          "type": "string"
+        },
         "pull_secret_set": {
           "description": "True if the pull-secret has been added to the cluster",
           "type": "boolean"
@@ -3938,6 +3941,9 @@ func init() {
           "enum": [
             "4.5"
           ]
+        },
+        "owner": {
+          "type": "string"
         },
         "pull_secret_set": {
           "description": "True if the pull-secret has been added to the cluster",
