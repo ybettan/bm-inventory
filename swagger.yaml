@@ -1264,6 +1264,8 @@ definitions:
       name:
         type: string
         description: Name of the OpenShift cluster.
+      owner:
+        type: string
       openshift_version:
         type: string
         enum: ['4.5']
