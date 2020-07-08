@@ -17,6 +17,8 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/filanov/bm-inventory/pkg/auth"
+
 	"github.com/filanov/bm-inventory/internal/identity"
 
 	"github.com/danielerez/go-dns-client/pkg/dnsproviders"
@@ -288,6 +290,7 @@ func (b *bareMetalInventory) RegisterCluster(ctx context.Context, params install
 	if params.NewClusterParams.ServiceNetworkCidr == nil {
 		params.NewClusterParams.ServiceNetworkCidr = &DefaultServiceNetworkCidr
 	}
+	log.Infof("RegisterCluster ERAN: %+v", ctx.Value(auth.ContextUsernameKey))
 
 	cluster := common.Cluster{Cluster: models.Cluster{
 		ID:                       &id,
@@ -993,6 +996,7 @@ func calculateHostNetworks(log logrus.FieldLogger, cluster *common.Cluster) []*m
 func (b *bareMetalInventory) ListClusters(ctx context.Context, params installer.ListClustersParams) middleware.Responder {
 	log := logutil.FromContext(ctx, b.log)
 	var clusters []*common.Cluster
+	log.Infof("ERAN: %+v", ctx.Value(auth.ContextUsernameKey))
 	query := identity.GetOwnerFilter(ctx)
 	if err := b.db.Preload("Hosts").Find(&clusters).Where(query).Error; err != nil {
 		log.WithError(err).Error("failed to list clusters")
