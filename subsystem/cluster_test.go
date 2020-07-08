@@ -9,6 +9,8 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/filanov/bm-inventory/client"
+
 	"github.com/filanov/bm-inventory/internal/bminventory"
 	"github.com/filanov/bm-inventory/internal/host"
 
@@ -205,7 +207,7 @@ func updateProgressWithInfo(hostID strfmt.UUID, clusterID strfmt.UUID, current_s
 }
 
 func waitForClusterInstallationToStart(clusterID strfmt.UUID) {
-	waitForClusterState(context.Background(), clusterID, "preparing-for-installation", 10*time.Second, IgnoreStateInfo)
+	//waitForClusterState(context.Background(), clusterID, "preparing-for-installation", 10*time.Second, IgnoreStateInfo)
 	waitForClusterState(context.Background(), clusterID, "installing", 180*time.Second, "Installation in progress")
 }
 
@@ -1347,3 +1349,88 @@ func registerHostsAndSetRoles(clusterID strfmt.UUID, numHosts int) {
 	Expect(err).NotTo(HaveOccurred())
 	waitForClusterState(ctx, clusterID, "ready", 60*time.Second, clusterReadyStateInfo)
 }
+
+var _ = Describe("Multiuser tests", func() {
+	ctx := context.Background()
+	var cluster *installer.RegisterClusterCreated
+	var clusterID strfmt.UUID
+	var err error
+	AfterEach(func() {
+		clearDB()
+	})
+	createCluster := func(c *client.AssistedInstall, clusterName string) strfmt.UUID {
+		cluster, err = c.Installer.RegisterCluster(ctx, &installer.RegisterClusterParams{
+			NewClusterParams: &models.ClusterCreateParams{
+				Name:             swag.String(clusterName),
+				OpenshiftVersion: swag.String("4.5"),
+			},
+		})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(swag.StringValue(cluster.GetPayload().Status)).Should(Equal("insufficient"))
+		Expect(swag.StringValue(cluster.GetPayload().StatusInfo)).Should(Equal(clusterInsufficientStateInfo))
+		Expect(cluster.GetPayload().StatusUpdatedAt).ShouldNot(Equal(strfmt.DateTime(time.Time{})))
+		return *cluster.Payload.ID
+	}
+
+	It("Single user multiple clusters", func() {
+		username := "user1"
+		c := GetClient(username)
+		clusterID = createCluster(c, "cluster1")
+		list, err := c.Installer.ListClusters(ctx, &installer.ListClustersParams{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(list.GetPayload())).Should(Equal(1))
+		createCluster(c, "cluster2")
+		list, err = c.Installer.ListClusters(ctx, &installer.ListClustersParams{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(list.GetPayload())).Should(Equal(2))
+
+		_, err = c.Installer.DeregisterCluster(ctx, &installer.DeregisterClusterParams{ClusterID: clusterID})
+		Expect(err).NotTo(HaveOccurred())
+
+		list, err = c.Installer.ListClusters(ctx, &installer.ListClustersParams{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(list.GetPayload())).Should(Equal(1))
+
+		_, err = c.Installer.GetCluster(ctx, &installer.GetClusterParams{ClusterID: clusterID})
+		Expect(err).Should(HaveOccurred())
+	})
+	It("multiple users", func() {
+
+		// Register a cluster as username1
+		username := "user1"
+		c := GetClient(username)
+		clusterID = createCluster(c, "cluster1")
+
+		// username1 should only see a single cluster
+		list, err := c.Installer.ListClusters(ctx, &installer.ListClustersParams{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(list.GetPayload())).Should(Equal(1))
+
+		// Register a cluster as username2
+		username2 := "user2"
+		c2 := GetClient(username2)
+		createCluster(c2, "cluster2")
+		// username1 should only see a single cluster
+		list, err = c.Installer.ListClusters(ctx, &installer.ListClustersParams{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(list.GetPayload())).Should(Equal(1))
+
+		// username2 should only see a single cluster
+		list, err = c2.Installer.ListClusters(ctx, &installer.ListClustersParams{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(list.GetPayload())).Should(Equal(1))
+
+		// Delete username1 cluster
+		_, err = c.Installer.DeregisterCluster(ctx, &installer.DeregisterClusterParams{ClusterID: clusterID})
+		Expect(err).NotTo(HaveOccurred())
+
+		// username1 should only see 0 clusters
+		list, err = c.Installer.ListClusters(ctx, &installer.ListClustersParams{})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(len(list.GetPayload())).Should(Equal(0))
+
+		_, err = c.Installer.GetCluster(ctx, &installer.GetClusterParams{ClusterID: clusterID})
+		Expect(err).Should(HaveOccurred())
+	})
+
+})

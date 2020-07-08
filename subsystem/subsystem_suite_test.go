@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/filanov/bm-inventory/pkg/auth"
+
 	"github.com/filanov/bm-inventory/client"
 	"github.com/jinzhu/gorm"
 	_ "github.com/jinzhu/gorm/dialects/mysql"
@@ -33,13 +35,7 @@ func init() {
 		log.Fatal(err.Error())
 	}
 
-	bmclient = client.New(client.Config{
-		URL: &url.URL{
-			Scheme: client.DefaultSchemes[0],
-			Host:   Options.InventoryHost,
-			Path:   client.DefaultBasePath,
-		},
-	})
+	bmclient = GetClient("")
 
 	db, err = gorm.Open("mysql",
 		fmt.Sprintf("admin:admin@tcp(%s:%s)/installer?charset=utf8&parseTime=True&loc=Local",
@@ -53,4 +49,15 @@ func TestSubsystem(t *testing.T) {
 	RegisterFailHandler(Fail)
 	clearDB()
 	RunSpecs(t, "Subsystem Suite")
+}
+
+func GetClient(user string) *client.AssistedInstall {
+	return client.New(client.Config{
+		URL: &url.URL{
+			Scheme: client.DefaultSchemes[0],
+			Host:   Options.InventoryHost,
+			Path:   client.DefaultBasePath,
+		},
+		AuthInfo: auth.Authenticate(user),
+	})
 }
