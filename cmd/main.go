@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/filanov/bm-inventory/pkg/auth"
+
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 
@@ -149,7 +151,7 @@ func main() {
 	})
 	h = app.WithMetricsResponderMiddleware(h)
 	h = app.WithHealthMiddleware(h)
-
+	h = auth.GetUserMiddleware(h)
 	h = requestid.Middleware(h)
 	if err != nil {
 		log.Fatal("Failed to init rest handler,", err)
