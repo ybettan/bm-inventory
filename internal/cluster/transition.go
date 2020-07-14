@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/filanov/bm-inventory/internal/common"
 	logutil "github.com/filanov/bm-inventory/pkg/log"
 	"github.com/filanov/stateswitch"
 	"github.com/go-openapi/strfmt"
@@ -39,7 +40,7 @@ func (th *transitionHandler) PostCancelInstallation(sw stateswitch.StateSwitch, 
 	if sCluster.srcState == clusterStatusError {
 		return nil
 	}
-	return updateClusterStateWithParams(logutil.FromContext(params.ctx, th.log), sCluster.srcState,
+	return updateCluster(logutil.FromContext(params.ctx, th.log), sCluster.srcState,
 		params.reason, sCluster.cluster, params.db)
 }
 
@@ -62,7 +63,7 @@ func (th *transitionHandler) PostResetCluster(sw stateswitch.StateSwitch, args s
 	if !ok {
 		return errors.New("PostResetCluster invalid argument")
 	}
-	return updateClusterStateWithParams(logutil.FromContext(params.ctx, th.log), sCluster.srcState,
+	return updateCluster(logutil.FromContext(params.ctx, th.log), sCluster.srcState,
 		params.reason, sCluster.cluster, params.db)
 }
 
@@ -120,4 +121,12 @@ func (th *transitionHandler) isSuccess(stateSwitch stateswitch.StateSwitch, args
 func (th *transitionHandler) notSuccess(stateSwitch stateswitch.StateSwitch, args stateswitch.TransitionArgs) (b bool, err error) {
 	params, _ := args.(*TransitionArgsCompleteInstallation)
 	return !params.isSuccess, nil
+}
+
+// Updates the status according to the cluster where the status equals the srcStatus
+func updateCluster(log logrus.FieldLogger, srcStatus, statusInfo string, c *common.Cluster, db *gorm.DB,
+	extra ...interface{}) error {
+	newStatus := c.Status
+	c.Status = &srcStatus
+	return updateClusterStateWithParams(log, *newStatus, statusInfo, c, db, extra...)
 }
