@@ -128,7 +128,7 @@ func (m *Manager) RegisterCluster(ctx context.Context, c *common.Cluster) error 
 	} else {
 		msg = "Registered cluster"
 	}
-	m.eventsHandler.AddEvent(ctx, c.ID.String(), msg, time.Now())
+	m.eventsHandler.AddEvent(ctx, c.ID.String(), models.EventSeverityInfo, msg, time.Now())
 	return err
 }
 
@@ -140,7 +140,7 @@ func (m *Manager) DeregisterCluster(ctx context.Context, c *common.Cluster) erro
 	} else {
 		msg = "Deregistered cluster"
 	}
-	m.eventsHandler.AddEvent(ctx, c.ID.String(), msg, time.Now())
+	m.eventsHandler.AddEvent(ctx, c.ID.String(), models.EventSeverityInfo, msg, time.Now())
 	return err
 }
 
